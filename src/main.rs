@@ -1,180 +1,69 @@
+use err::AppError;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::{error::Error, fmt::Display};
-use tokio::time::{sleep, Duration};
+use std::{
+    error::Error,
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    path::PathBuf,
+};
 
-const CLIENT_ID: &str = "a14deabe89e4f5d2dfb9";
-const SCOPE: &str = "notifications";
-const ACCEPT: &str = "application/vnd.github.v3+json";
-const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+mod auth;
+mod err;
 
-#[derive(Debug)]
-enum AppError {
-    Timeout,
-}
-
-impl Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AppError::Timeout => write!(f, "Timeout while waiting user action"),
-        }
-    }
-}
-
-impl Error for AppError {}
+const CONFIG_FILE_NAME: &str = ".ghnotifierrc";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let client = Client::new();
-    let device_response = get_device_code(&client).await?;
-    println!(
-        "Please open URL {} in your browser and enter the following code: {}",
-        device_response.verification_uri, device_response.user_code
-    );
-    poll_access_token(
-        &client,
-        device_response.interval,
-        device_response.expires_in,
-        &device_response.device_code,
-    )
-    .await?;
+    let config_file_path = get_config_file()?;
+    let token = read_token_from_file(&config_file_path)?;
+
+    if token.is_empty() {
+        let device_response = auth::get_device_code(&client).await?;
+        println!(
+            "Please open URL {} in your browser and enter the following code: {}",
+            device_response.verification_uri, device_response.user_code
+        );
+        let token = auth::poll_access_token(
+            &client,
+            device_response.interval,
+            device_response.expires_in,
+            &device_response.device_code,
+        )
+        .await?;
+        println!("Access granted! New token: {}", token);
+        write_token_to_file(&token, &config_file_path)?;
+    } else {
+        println!("Prevoius token was found {}", token);
+    }
+
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct DeviceResponse {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub expires_in: u64,
-    pub interval: u64,
+fn read_token_from_file(path: &PathBuf) -> Result<String, Box<dyn Error>> {
+    let mut config_file = OpenOptions::new().read(true).open(path)?;
+    let mut token = String::new();
+    config_file.read_to_string(&mut token)?;
+    Ok(token)
 }
 
-#[derive(Serialize)]
-struct DeviceRequest {
-    client_id: String,
-    scope: String,
+fn write_token_to_file(token: &str, path: &PathBuf) -> Result<(), Box<dyn Error>> {
+    let mut config_file = OpenOptions::new().write(true).create(true).open(path)?;
+    config_file.write_all(token.as_bytes())?;
+    Ok(())
 }
 
-async fn get_device_code(client: &Client) -> Result<DeviceResponse, Box<dyn Error>> {
-    let request_body = DeviceRequest {
-        client_id: CLIENT_ID.to_owned(),
-        scope: SCOPE.to_owned(),
-    };
-    let response = client
-        .post("https://github.com/login/device/code")
-        .header("Accept", ACCEPT)
-        .json(&request_body)
-        .send()
-        .await?
-        .json::<DeviceResponse>()
-        .await?;
-    Ok(response)
-}
-
-#[derive(Serialize)]
-struct AccessTokenRequest {
-    client_id: String,
-    device_code: String,
-    grant_type: String,
-}
-
-#[derive(Deserialize)]
-struct AccessTokenSuccessResponse {
-    pub access_token: String,
-    pub token_type: String,
-    pub scope: String,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-enum AccessTokenError {
-    AuthorizationPending,
-    SlowDown,
-    ExpiredToken,
-    UnsupportedGrantType,
-    IncorrectClientCredentials,
-    IncorrectDeviceCode,
-    AccessDenied,
-}
-
-#[derive(Deserialize, Debug)]
-struct AccessTokenErrorResponse {
-    pub error: AccessTokenError,
-    pub error_description: String,
-    pub error_uri: String,
-}
-
-impl Display for AccessTokenErrorResponse {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.error_description)
-    }
-}
-
-impl Error for AccessTokenErrorResponse {}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum AccessTokenResponse {
-    SuccessfulResponse(AccessTokenSuccessResponse),
-    ErrorResponse(AccessTokenErrorResponse),
-}
-
-async fn poll_access_token(
-    client: &Client,
-    mut interval: u64,
-    expires_in: u64,
-    device_code: &str,
-) -> Result<String, Box<dyn Error>> {
-    let request_body = AccessTokenRequest {
-        client_id: CLIENT_ID.to_owned(),
-        device_code: device_code.to_owned(),
-        grant_type: GRANT_TYPE.to_owned(),
-    };
-
-    let limit: u64 = expires_in / interval;
-    let mut count = 0;
-
-    loop {
-        count += 1;
-        let response = client
-            .post("https://github.com/login/oauth/access_token")
-            .header("Accept", ACCEPT)
-            .json(&request_body)
-            .send()
-            .await?
-            .json::<AccessTokenResponse>()
-            .await?;
-
-        match response {
-            AccessTokenResponse::SuccessfulResponse(r) => {
-                println!("Granted! Token {}", r.access_token);
-                break Ok(r.access_token);
+fn get_config_file() -> Result<PathBuf, Box<dyn Error>> {
+    match dirs::config_dir() {
+        None => Err(Box::new(AppError::NoConfigDirectory)),
+        Some(dir) => {
+            let config_file_path = dir.join(CONFIG_FILE_NAME);
+            if !config_file_path.exists() {
+                File::create(&config_file_path)?;
+                Ok(config_file_path)
+            } else {
+                Ok(config_file_path)
             }
-            AccessTokenResponse::ErrorResponse(e) => match e.error {
-                AccessTokenError::AuthorizationPending => {
-                    if count >= limit {
-                        break Err(Box::new(AppError::Timeout));
-                    } else {
-                        println!("{}", e.error_description);
-                        sleep(Duration::from_secs(interval)).await;
-                        continue;
-                    }
-                }
-                AccessTokenError::SlowDown => {
-                    if count >= limit {
-                        break Err(Box::new(AppError::Timeout));
-                    } else {
-                        interval += 5;
-                        println!("Slow down. New interval is {}", interval);
-                        sleep(Duration::from_secs(interval)).await;
-                        continue;
-                    }
-                }
-                _ => {
-                    break Err(Box::new(e));
-                }
-            },
         }
     }
 }
