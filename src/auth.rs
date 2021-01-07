@@ -8,16 +8,43 @@ use crate::err::AppError;
 
 const CLIENT_ID: &str = "a14deabe89e4f5d2dfb9";
 const SCOPE: &str = "notifications";
-const ACCEPT: &str = "application/vnd.github.v3+json";
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
+mod fs;
+
+pub async fn init_auth_token(client: &Client) -> Result<String, Box<dyn Error>> {
+    let config_file_path = fs::get_config_file()?;
+    let token = fs::read_token_from_file(&config_file_path)?;
+
+    if token.is_empty() {
+        let device_response = get_device_code(&client).await?;
+        println!(
+            "Please open URL {} in your browser and enter the following code: {}",
+            device_response.verification_uri, device_response.user_code
+        );
+        let token = poll_access_token(
+            &client,
+            device_response.interval,
+            device_response.expires_in,
+            &device_response.device_code,
+        )
+        .await?;
+        println!("Access granted! New token: {}", token);
+        fs::write_token_to_file(&token, &config_file_path)?;
+        Ok(token)
+    } else {
+        println!("Previous token was found: {}", token);
+        Ok(token)
+    }
+}
+
 #[derive(Deserialize)]
-pub struct DeviceResponse {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub expires_in: u64,
-    pub interval: u64,
+struct DeviceResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: u64,
 }
 
 #[derive(Serialize)]
@@ -26,14 +53,13 @@ struct DeviceRequest {
     scope: String,
 }
 
-pub async fn get_device_code(client: &Client) -> Result<DeviceResponse, Box<dyn Error>> {
+async fn get_device_code(client: &Client) -> Result<DeviceResponse, Box<dyn Error>> {
     let request_body = DeviceRequest {
         client_id: CLIENT_ID.to_owned(),
         scope: SCOPE.to_owned(),
     };
     let response = client
         .post("https://github.com/login/device/code")
-        .header("Accept", ACCEPT)
         .json(&request_body)
         .send()
         .await?
@@ -51,9 +77,7 @@ struct AccessTokenRequest {
 
 #[derive(Deserialize)]
 struct AccessTokenSuccessResponse {
-    pub access_token: String,
-    pub token_type: String,
-    pub scope: String,
+    access_token: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -70,9 +94,9 @@ enum AccessTokenError {
 
 #[derive(Deserialize, Debug)]
 struct AccessTokenErrorResponse {
-    pub error: AccessTokenError,
-    pub error_description: String,
-    pub error_uri: String,
+    error: AccessTokenError,
+    error_description: String,
+    error_uri: String,
 }
 
 impl Display for AccessTokenErrorResponse {
@@ -90,7 +114,7 @@ enum AccessTokenResponse {
     ErrorResponse(AccessTokenErrorResponse),
 }
 
-pub async fn poll_access_token(
+async fn poll_access_token(
     client: &Client,
     mut interval: u64,
     expires_in: u64,
@@ -109,7 +133,6 @@ pub async fn poll_access_token(
         count += 1;
         let response = client
             .post("https://github.com/login/oauth/access_token")
-            .header("Accept", ACCEPT)
             .json(&request_body)
             .send()
             .await?
