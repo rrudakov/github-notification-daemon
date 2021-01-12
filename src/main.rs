@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .default_headers(headers)
         .build()?;
     let token = auth::init_auth_token(&client).await?;
-    notifications::get_notification(&client, &token).await?;
+    notifications::get_notification(&token).await?;
 
     Ok(())
 }
