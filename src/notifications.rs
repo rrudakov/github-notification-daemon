@@ -14,7 +14,7 @@ use crate::conf;
 #[derive(Deserialize)]
 struct Subject {
     title: String,
-    // latest_comment_url: String,
+    latest_comment_url: Option<String>,
     #[serde(alias = "type")]
     subject_type: String,
 }
@@ -60,6 +60,8 @@ pub async fn get_notification(token: &str) -> Result<(), Box<dyn Error>> {
         poll_interval = extract_poll_interval(&response).unwrap_or(60);
         let notifications = response.json::<Vec<Notification>>().await?;
 
+        println!("Fetched {} new notifications", notifications.len());
+
         for notification in notifications {
             tokio::spawn(async move {
                 display_notification(&notification).await;
@@ -85,6 +87,12 @@ async fn display_notification(notification: &Notification) {
         "[{}]\n{}",
         &notification.subject.subject_type, &notification.subject.title
     );
+
+    let html_url: String = match fetch_html_url(&notification).await {
+        Ok(Some(html_url)) => html_url,
+        _ => "".into(),
+    };
+
     notify_rust::Notification::new()
         .summary(&notification.repository.full_name)
         .action("default", "Open url")
@@ -93,36 +101,46 @@ async fn display_notification(notification: &Notification) {
         .timeout(0)
         .icon("file:///usr/share/icons/Papirus/32x32/apps/github.svg") // TODO: do not use hardcoded icon
         .show()
-        .map_or((), |_| ())
-        // .map_or((), |n| {
-        //     n.wait_for_action(|action| {
-        //         if let "default" = action {
-        //             open_browser_for_notification(&notification)
-        //         }
-        //     })
-        // })
+        .map_or((), |n| {
+            n.wait_for_action(|action| {
+                if let "default" = action {
+                    open_browser_for_notification(&html_url)
+                }
+            })
+        })
 }
 
-// #[derive(Deserialize)]
-// struct Ticket {
-//     html_url: String,
-// }
+#[derive(Deserialize)]
+struct Ticket {
+    html_url: String,
+}
 
-// fn open_browser_for_notification(notification: &Notification) {
-//     if let Ok(html_url) = fetch_html_url(&notification.subject.latest_comment_url) {
-//         if webbrowser::open(&html_url).is_ok() {
-//             ()
-//         }
-//     }
-// }
+fn open_browser_for_notification(html_url: &str) {
+    if !html_url.is_empty() {
+        if webbrowser::open(html_url).is_ok() {
+            ()
+        }
+    }
+}
 
-// fn fetch_html_url(ticket_url: &str) -> Result<String, Box<dyn Error>> {
-//     let mut headers = HeaderMap::new();
-//     headers.insert(ACCEPT, HeaderValue::from_static(conf::ACCEPT_VALUE));
-//     let client = reqwest::blocking::Client::builder()
-//         .user_agent(conf::USER_AGENT_VALUE)
-//         .default_headers(headers)
-//         .build()?;
-//     let html_url = client.get(ticket_url).send()?.json::<Ticket>()?.html_url;
-//     Ok(html_url)
-// }
+async fn fetch_html_url(notification: &Notification) -> Result<Option<String>, Box<dyn Error>> {
+    match &notification.subject.latest_comment_url {
+        Some(ticket_url) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(ACCEPT, HeaderValue::from_static(conf::ACCEPT_VALUE));
+            let client = Client::builder()
+                .user_agent(conf::USER_AGENT_VALUE)
+                .default_headers(headers)
+                .build()?;
+            let html_url = client
+                .get(ticket_url)
+                .send()
+                .await?
+                .json::<Ticket>()
+                .await?
+                .html_url;
+            Ok(Some(html_url))
+        }
+        None => Ok(None),
+    }
+}
