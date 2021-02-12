@@ -17,6 +17,6 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install dbus
-      run: sudo apt-get install dbus
+      run: sudo apt-get install dbus libdbus-1-dev libdbus-glib-1-dev
     - name: Build
       run: cargo build --verbose
