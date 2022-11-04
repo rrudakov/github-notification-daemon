@@ -7,11 +7,11 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serde = { version = "1.0.118", features = ["derive"] }
-serde_json = "1.0"
-reqwest = { version = "0.11", features = ["json", "blocking"] }
-tokio = { version = "1", features = ["full"] }
-dirs = "3.0.1"
-notify-rust = { version = "4", features = ["images"]}
-chrono = "0.4"
-webbrowser = "0.5.5"
+serde = { version = "1.0.147", features = ["derive"]}
+serde_json = "1.0.87"
+reqwest = { version = "0.11.12", features = ["json", "blocking"] }
+tokio = { version = "1.21.2", features = ["full"] }
+dirs = "4.0.0"
+notify-rust = { version = "4.5.10", features = ["images"] }
+chrono = "0.4.22"
+webbrowser = "0.8.1"
